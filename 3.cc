@@ -1,69 +1,111 @@
-#include "ns3/core-module.h"
-#include "ns3/network-module.h"
-#include "ns3/internet-module.h"
-#include "ns3/point-to-point-module.h"
-#include "ns3/applications-module.h"
-#include "ns3/csma-module.h"
-#include "ns3/network-application-helper.h"
+import math
+import csv
 
-using namespace ns3;
+def load_csv(filename):
+    lines=csv.reader(open(filename,"r"));
+    dataset = list(lines)
+    headers = dataset.pop(0)
+    return dataset,headers
+
+class Node:
+    def __init__ (self,attribute):
+        self.attribute=attribute
+        self.children=[]
+        self.answer=""
 
 
+def subtables(data,col,delete):
+    dic={}
+    coldata=[row[col] for row in data]
+    attr=list(set(coldata))
+    counts=[0]*len(attr)
+    r=len(data)
+    c=len(data[0])
+    for x in range(len(attr)):
+        
+        for y in range(r):
+            if data[y][col]==attr[x]:
+                counts[x]+=1
+    for x in range(len(attr)):
+        dic[attr[x]]=[[0 for i in range(c)] for j in range(counts[x])]
+        pos=0
+        for y in range(r):
+            if data[y][col]==attr[x]:
+                if delete:
+                    del data[y][col]
+                dic[attr[x]][pos]=data[y]
+                pos+=1
+    return attr,dic
 
-int main(int argc, char *argv[])
-{
-    CommandLine cmd;
-    cmd.Parse(argc, argv);
+def entropy(S):
+    attr=list(set(S))
+    if len(attr)==1:
+        return 0
+    counts=[0,0]
+    for i in range(2):
+        counts[i]=sum([1 for x in S if attr[i]==x])/(len(S)*1.0)
+    sums=0
+    for cnt in counts:
+        sums+=-1*cnt*math.log(cnt,2)
+    return sums
 
-   
-    NodeContainer nodes;
-    nodes.Create(4);
+def compute_gain(data,col):
+    attr,dic = subtables(data,col,delete=False)
+    total_size=len(data)
+    entropies=[0]*len(attr)
+    ratio=[0]*len(attr)
+    total_entropy=entropy([row[-1] for row in data])
+    for x in range(len(attr)):
+        ratio[x]=len(dic[attr[x]])/(total_size*1.0)
+        entropies[x]=entropy([row[-1] for row in dic[attr[x]]])
 
-    CsmaHelper csma;
-    csma.SetChannelAttribute("DataRate", StringValue("5Mbps"));
-    csma.SetChannelAttribute("Delay", TimeValue(MilliSeconds(0.0001)));
+        total_entropy-=ratio[x]*entropies[x]
+    return total_entropy
 
-    NetDeviceContainer devices;
-    devices = csma.Install(nodes);
+def build_tree(data,features):
+    lastcol=[row[-1] for row in data]
+    if(len(set(lastcol)))==1:
+        node=Node("")
+        node.answer=lastcol[0]
+        return node
+    n=len(data[0])-1
+    gains=[0]*n
+    for col in range(n):
+        gains[col]=compute_gain(data,col)
+    split=gains.index(max(gains))
+    node=Node(features[split])
+    fea = features[:split]+features[split+1:]
+    attr,dic=subtables(data,split,delete=True)
+    for x in range(len(attr)):
+        child=build_tree(dic[attr[x]],fea)
+        node.children.append((attr[x],child))
+    return node
 
-    Ptr<RateErrorModel> em = CreateObject<RateErrorModel>();
-    em->SetAttribute("ErrorRate", DoubleValue(0.00001));
-    devices.Get(1)->SetAttribute("ReceiveErrorModel", PointerValue(em));
+def print_tree(node,level):
+    if node.answer!="":
+        print(" "*level,node.answer)
+        return
+    print(" "*level,node.attribute)
+    for value,n in node.children:
+        print(" "*(level+1),value)
+        print_tree(n,level+2)
 
-    InternetStackHelper stack;
-    stack.Install(nodes);
+def classify(node,x_test,features):
+    if node.answer!="":
+        print(node.answer)
+        return
+    pos=features.index(node.attribute)
+    for value, n in node.children:
+        if x_test[pos]==value:
+            classify(n,x_test,features)
 
-    Ipv4AddressHelper address;
-    address.SetBase("10.1.1.0", "255.255.255.0");
-    Ipv4InterfaceContainer interfaces = address.Assign(devices);
 
-    uint16_t sinkPort = 8080;
-
-    Address sinkAddress(InetSocketAddress(interfaces.GetAddress(1), sinkPort));
-    PacketSinkHelper packetSinkHelper("ns3::TcpSocketFactory", InetSocketAddress(Ipv4Address::GetAny(), sinkPort));
-
-    ApplicationContainer sinkApps = packetSinkHelper.Install(nodes.Get(1));
-    sinkApps.Start(Seconds(0.));
-    sinkApps.Stop(Seconds(20.));
-
-    Ptr<Socket> ns3TcpSocket = Socket::CreateSocket(nodes.Get(0), TcpSocketFactory::GetTypeId());
-    ns3TcpSocket->TraceConnectWithoutContext("CongestionWindow", MakeCallback(&CwndChange));
-
-    Ptr<NetworkApplication> app = CreateObject<NetworkApplication>();
-    app->Setup(ns3TcpSocket, sinkAddress, 1040, 1000, DataRate("50Mbps"));
-    nodes.Get(0)->AddApplication(app);
-    app->SetStartTime(Seconds(1.));
-    app->SetStopTime(Seconds(20.));
-
-    devices.Get(1)->TraceConnectWithoutContext("PhyRxDrop", MakeCallback(&RxDrop));
-
-    AsciiTraceHelper ascii;
-    csma.EnableAsciiAll(ascii.CreateFileStream("3lan.tr"));
-    csma.EnablePcapAll(std::string("3lan"), true);
-
-    Simulator::Stop(Seconds(20));
-    Simulator::Run();
-    Simulator::Destroy();
-
-    return 0;
-}
+dataset,features=load_csv("id3.csv")
+node1=build_tree(dataset,features)
+print("The decision tree for the dataset using ID3 algorithm is")
+print_tree(node1,0)
+testdata,features=load_csv("id3_test.csv")
+for xtest in testdata:
+    print("The test instance:",xtest)
+    print("The label for test instance:",end=" ")
+    classify(node1,xtest,features)
